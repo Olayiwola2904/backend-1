@@ -4,9 +4,16 @@ vi.mock('../webhooks/webhook.service', () => ({
 }));
 const { publish } = vi.hoisted(() => ({ publish: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../lib/queue', () => ({ stellarConfirmationQueue: { add: vi.fn() } }));
+// #175 — stub getWalletBalance so tests stay hermetic (no Stellar network call)
+vi.mock('../../lib/stellar/wallet', () => ({
+  getWalletBalance: vi.fn(),
+}));
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { PaymentService } from './payment.service';
-import { ValidationError, NotFoundError } from '../../utils/errors';
+import { ValidationError, NotFoundError, PaymentDeclinedError, PaymentNotFoundError } from '../../utils/errors';
+import { getWalletBalance } from '../../lib/stellar/wallet';
+
+const mockGetWalletBalance = getWalletBalance as ReturnType<typeof vi.fn>;
 
 // Mock Prisma
 const mockPrisma = {
@@ -46,6 +53,9 @@ describe('PaymentService', () => {
   beforeEach(() => {
     paymentService = new PaymentService(mockPrisma as unknown as PrismaClient);
     vi.clearAllMocks();
+
+    // #175 — default: wallet has ample balance so existing tests pass unchanged
+    mockGetWalletBalance.mockResolvedValue({ lumens: '100', usdc: '1000' });
 
     mockPrisma.stellarAsset.findFirst.mockResolvedValue({
       id: 'asset-usdc',
@@ -193,7 +203,7 @@ describe('PaymentService', () => {
       mockPrisma.walletFlag.findFirst.mockResolvedValue({ id: 'flag-1' });
 
       await expect(paymentService.createTip(userId, { creatorId, amount: 50 })).rejects.toThrow(
-        ValidationError
+        PaymentDeclinedError
       );
       expect(mockPrisma.tip.create).not.toHaveBeenCalled();
     });
@@ -252,7 +262,7 @@ describe('PaymentService', () => {
       mockPrisma.accountFreeze.findFirst.mockResolvedValue({ id: 'freeze-1' });
 
       await expect(paymentService.createTip(userId, { creatorId, amount: 100 })).rejects.toThrow(
-        ValidationError
+        PaymentDeclinedError
       );
       expect(mockPrisma.tip.create).not.toHaveBeenCalled();
     });
@@ -356,7 +366,7 @@ describe('PaymentService', () => {
     it('should throw NotFoundError if tip does not exist', async () => {
       mockPrisma.tip.findUnique.mockResolvedValue(null);
 
-      await expect(paymentService.getTip('non-existent')).rejects.toThrow(NotFoundError);
+      await expect(paymentService.getTip('non-existent')).rejects.toThrow(PaymentNotFoundError);
     });
   });
 
